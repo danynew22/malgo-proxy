@@ -1,8 +1,14 @@
+// api/explain.js
+function setCORS(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+}
+
 export default async function handler(req, res) {
-  // CORS(모바일은 보통 필요 없지만 안전하게 허용)
+  setCORS(res);
+
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'content-type');
     return res.status(204).end();
   }
   if (req.method !== 'POST') {
@@ -16,8 +22,7 @@ export default async function handler(req, res) {
 
     const prompt =
       `${reference}\n${verse}\n\n` +
-      `위 말씀을 바탕으로 '현재 상황이 어떠한지'와 '앞으로 어떻게 하면 좋을지'를 ` +
-      `현실적인 관점과 확신의 어조로 간결히 설명해줘. 신앙 일반론보다는 실천 조언 위주로.`;
+      `위 말씀을 바탕으로 '현재 상황'과 '앞으로의 행동'을 현실적이고 확신의 어조로 간결히 조언해줘.`;
 
     const oai = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -28,7 +33,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: model || 'gpt-5-nano',
         messages: [
-          { role: 'system', content: '너는 현실 중심의 멘토다. 단호하고 명확하게 조언한다.' },
+          { role: 'system', content: '너는 현실 중심 멘토. 단호하고 명확하게 조언.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
@@ -38,15 +43,17 @@ export default async function handler(req, res) {
 
     if (!oai.ok) {
       const txt = await oai.text();
+      setCORS(res);
       return res.status(500).json({ error: `OpenAI error: ${txt}` });
     }
 
     const data = await oai.json();
     const text = (data?.choices?.[0]?.message?.content || '').trim();
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    setCORS(res);
     return res.status(200).json({ explanation: text });
   } catch (e) {
+    setCORS(res); // ❗ 에러 응답에도 CORS 꼭 달기
     return res.status(500).json({ error: e?.message || 'unknown error' });
   }
 }
