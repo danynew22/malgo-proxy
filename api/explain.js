@@ -1,6 +1,6 @@
 // api/explain.js
 function setCORS(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', '*');            // ← 핵심
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
@@ -8,14 +8,17 @@ function setCORS(res) {
 export default async function handler(req, res) {
   setCORS(res);
 
+  // 프리플라이트(사전검사) 응답
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
   }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
+    // 바디 파싱(스트림 → JSON)
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const { model, reference, verse } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -53,7 +56,7 @@ export default async function handler(req, res) {
     setCORS(res);
     return res.status(200).json({ explanation: text });
   } catch (e) {
-    setCORS(res); // ❗ 에러 응답에도 CORS 꼭 달기
+    setCORS(res); // 에러에도 반드시!
     return res.status(500).json({ error: e?.message || 'unknown error' });
   }
 }
