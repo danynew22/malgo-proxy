@@ -46,13 +46,11 @@ export default async function handler(req, res) {
     // ::P1:: [말씀 맥락(2~3문장, 문장마다 \n)] ::/P1::
     // ::P2C:: [현재(사실 서술, 이미 알고 있듯 단정적·구체적/말끝은 조심스럽게), 문장 끝 \n] ::/P2C::
     // ::P2F:: [미래(사실 서술, 일어날 일을 아는 듯 단정적·구체적/말끝은 조심스럽게), 문장 끝 \n] ::/P2F::
-    // ::P3:: [행동 하나 추천(한 문장)] ::/P3::
+    // ::P3:: [행동 하나 제안(맥락에 맞는 구체적 행동 1개, 자연스럽게 이어지는 한두 문장)] ::/P3::
     const sysRole =
       '너는 주어진 성경 구절을 비종교 독자도 편하게 읽을 수 있게, 현실적이고 일상적인 언어로 풀어주는 해석자야. ' +
       '설교체/교리 전개/전도성 권유/축복 선언/기도 강요는 피하고, 생활 맥락과 감정에 공감하는 설명을 해. ' +
       '항상 한국어 해요체로 답해.';
-      '마무리는 형식을 드러내지 말고, 자연스럽게 행동을 제안하는 한두 문장으로 정리해.',
-
 
     const formatRules = [
       `프롬프트 버전: ${prompt_version}`,
@@ -64,7 +62,7 @@ export default async function handler(req, res) {
       '  ::P1:: [맥락 2~3문장, 각 문장 끝에는 실제 줄바꿈(\\n)을 넣기] ::/P1::',
       '  ::P2C:: [현재 상황: 사용자가 이미 겪고 있는 문제를 아는 듯 단정적으로, 구체적으로 서술. 말끝은 조심스럽고 다정하게. 마지막에 \\n] ::/P2C::',
       '  ::P2F:: [미래 전망: 사용자가 맞닥뜨릴 일을 아는 듯 단정적으로, 구체적으로 서술. 말끝은 조심스럽고 다정하게. 마지막에 \\n] ::/P2F::',
-      '  ::P3:: [자연스럽고 일상적인 문장으로 핵심 행동 하나만 제안해요. 명령조는 피하고, 선택/제안 어조로 부드럽게 표현해요. 고정된 틀(“이럴 땐 ~ 어때요?” 등)이나 괄호·번호·기호는 쓰지 않아요. 1문장 권장(최대 2문장).] ::/P3::',
+      '  ::P3:: [행동 하나 제안: 맥락에 맞는 구체적 행동 1개를 자연스럽게 제시. 한두 문장, 특정 문구/형식 강제 금지] ::/P3::',
       '- 각 단락은 서버가 조합하며, 단락 사이에는 빈 줄 1칸(\\n\\n)이 보이도록 구성된다.',
       `- 전체 길이: ${length_limit}자 이내(한글 기준).`,
       '- 종교 용어 남발 금지. 구절 언급은 가능하되 해석은 생활 중심, 세속적·실용적 관점.',
@@ -197,32 +195,27 @@ export default async function handler(req, res) {
     let sym1 = pick();
     let sym2 = pick();
     if (sym2 === sym1) {
-      // 중복 최소화
       sym2 = pick();
     }
 
     // ===== 최종 조합 =====
     // - P1: 여러 문장 → 줄마다 개행, 단락 끝에는 \n\n
     // - P2: 정확히 2줄  → "기호 현재\n기호 미래"  (맨 앞에서만 기호 사용)
-    // - P3: 한 문장      (마지막에 개행 없음)
+    // - P3: 자연스러운 한두 문장 (문장 끝 줄바꿈 보정, 마지막에 개행 없음)
     const parts = [];
 
     if (p1Clean) {
-      // 마침표/물음표/느낌표/말줄임 뒤 공백+문자 시작 → 줄바꿈 보정
       let p1Final = p1Clean
         .replace(/([.?!…])\s+(?=[가-힣A-Za-z0-9“"'])/g, '$1\n')
         .replace(/\n{2,}/g, '\n')
         .trim();
-      // 방어: "/n"이나 "\n" 문자열 잔여 제거 → 실제 개행
       p1Final = normalizeEscapedBreaks(p1Final);
       parts.push(p1Final);
     }
 
-    // 2단락(현재/미래)
     if (p2cLine || p2fLine) {
       let line1 = p2cLine ? `${sym1} ${p2cLine}` : '';
       let line2 = p2fLine ? `${sym2} ${p2fLine}` : '';
-      // 방어: "/n"이나 "\n" 문자열 잔여 제거 금지 → 실제 개행으로
       line1 = normalizeEscapedBreaks(line1);
       line2 = normalizeEscapedBreaks(line2);
       const p2Block = [line1, line2].filter(Boolean).join('\n');
@@ -230,7 +223,11 @@ export default async function handler(req, res) {
     }
 
     if (p3Clean) {
-      let p3Final = p3Clean.replace(/\n{2,}/g, '\n').trim();
+      // P3도 자연스럽게 문장 끝 줄바꿈 보정
+      let p3Final = p3Clean
+        .replace(/([.?!…])\s+(?=[가-힣A-Za-z0-9“"'])/g, '$1\n')
+        .replace(/\n{2,}/g, '\n')
+        .trim();
       p3Final = normalizeEscapedBreaks(p3Final);
       parts.push(p3Final);
     }
@@ -253,4 +250,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: e?.message || 'unknown error' });
   }
 }
-
