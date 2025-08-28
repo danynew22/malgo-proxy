@@ -1,41 +1,27 @@
-// api/explain.js
-export const config = { runtime: 'edge' };
+// api/explain.js  (Serverless, Node 22)
+export default async function handler(req, res) {
+  // 안전빵: 함수 레벨에서도 CORS 헤더 부착
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...CORS, 'Content-Type': 'application/json' },
-  });
-}
-
-export default async function handler(req) {
-  // 프리플라이트
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: CORS });
-  }
-
-  // 헬스체크(브라우저에서 바로 열어보기용)
   if (req.method === 'GET') {
-    return json({ ok: true, route: '/api/explain', runtime: 'edge' });
+    return res.status(200).json({ ok: true, route: '/api/explain', runtime: 'node22' });
   }
 
   if (req.method !== 'POST') {
-    return json({ error: 'Method not allowed' }, 405);
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    const { model, reference, verse } = await req.json();
+    const { model, reference, verse } = req.body || {};
     const prompt =
       `${reference}\n${verse}\n\n` +
       `위 말씀을 바탕으로 '현재 상황'과 '앞으로의 행동'을 현실적이고 확신의 어조로 간결히 조언해줘.`;
 
-    const oai = await fetch('https://api.openai.com/v1/chat/completions', {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -52,15 +38,15 @@ export default async function handler(req) {
       }),
     });
 
-    if (!oai.ok) {
-      const txt = await oai.text();
-      return json({ error: `OpenAI error: ${txt}` }, 500);
+    if (!resp.ok) {
+      const txt = await resp.text();
+      return res.status(500).json({ error: `OpenAI error: ${txt}` });
     }
 
-    const data = await oai.json();
+    const data = await resp.json();
     const text = (data?.choices?.[0]?.message?.content || '').trim();
-    return json({ explanation: text });
+    return res.status(200).json({ explanation: text });
   } catch (e) {
-    return json({ error: e?.message || 'unknown error' }, 500);
+    return res.status(500).json({ error: e?.message || 'unknown error' });
   }
 }
