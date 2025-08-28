@@ -1,25 +1,38 @@
-// api/explain.js  → Edge Runtime (vercel.json 필요 없음)
+// api/explain.js
 export const config = { runtime: 'edge' };
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...CORS, 'Content-Type': 'application/json' },
+  });
+}
+
 export default async function handler(req) {
+  // 1) 프리플라이트(사전요청)
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS });
   }
+
+  // 2) 브라우저에서 바로 점검 가능하게 GET 허용(헬스체크)
+  if (req.method === 'GET') {
+    return json({ ok: true, route: '/api/explain', runtime: 'edge' });
+  }
+
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405,
-      headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+    return json({ error: 'Method not allowed' }, 405);
   }
 
   try {
-    const { model, reference, verse } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const { model, reference, verse } = body;
+
     const prompt =
       `${reference}\n${verse}\n\n` +
       `위 말씀을 바탕으로 '현재 상황'과 '앞으로의 행동'을 현실적이고 확신의 어조로 간결히 조언해줘.`;
@@ -43,23 +56,13 @@ export default async function handler(req) {
 
     if (!oai.ok) {
       const txt = await oai.text();
-      return new Response(JSON.stringify({ error: `OpenAI error: ${txt}` }), {
-        status: 500,
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-      });
+      return json({ error: `OpenAI error: ${txt}` }, 500);
     }
 
     const data = await oai.json();
     const text = (data?.choices?.[0]?.message?.content || '').trim();
-
-    return new Response(JSON.stringify({ explanation: text }), {
-      status: 200,
-      headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+    return json({ explanation: text });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e?.message || 'unknown error' }), {
-      status: 500,
-      headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+    return json({ error: e?.message || 'unknown error' }, 500);
   }
 }
