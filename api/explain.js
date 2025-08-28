@@ -42,14 +42,15 @@ export default async function handler(req, res) {
     }
 
     // ===== 프롬프트 구성 =====
-    // 내부 마커 사용 지시(서버에서 치환/제거):
-    // ::P1:: ... ::/P1::
-    // ::P2:: (현재) ::BR2:: (미래) ::/P2::
-    // ::P3:: ... ::/P3::
+    // 마커 4종 강제:
+    // ::P1:: [말씀 맥락(2~3문장, 문장마다 \n)] ::/P1::
+    // ::P2C:: [현재 브리핑+공감(한 문장 권장, 문장 끝 \n)] ::/P2C::
+    // ::P2F:: [미래 전망(한 문장 권장, 문장 끝 \n)] ::/P2F::
+    // ::P3:: [행동 하나 추천(한 문장)] ::/P3::
     const sysRole =
-      '너는 주어진 성경 구절을 바탕으로, 비종교 독자도 편안히 읽을 수 있게 현실적이고 일상적인 언어로 풀어주는 해석자야. ' +
-      '설교체/교리 설명/전도성 권유는 피하고, 신학적 단정 대신 생활 맥락과 감정에 공감하는 설명을 해. ' +
-      '항상 한국어 해요체(예: ~해요, ~해보세요)로 답해.';
+      '너는 주어진 성경 구절을 비종교 독자도 편하게 읽을 수 있게, 현실적이고 일상적인 언어로 풀어주는 해석자야. ' +
+      '설교체/교리 전개/전도성 권유/축복 선언/기도 강요는 피하고, 생활 맥락과 감정에 공감하는 설명을 해. ' +
+      '항상 한국어 해요체로 답해.';
 
     const formatRules = [
       `프롬프트 버전: ${prompt_version}`,
@@ -57,14 +58,15 @@ export default async function handler(req, res) {
       instructions ? `추가 지시: ${instructions}` : '',
       '',
       '출력 규칙(엄격):',
-      '- 출력은 3개의 부분으로만 만들되, 번호/소제목/마크다운/대괄호 등 표시는 쓰지 마.',
-      '- 1부분: 맥락을 2~3문장으로 간단히 설명. 종교 용어 남발 금지.',
-      '- 2부분: (현재 상황 브리핑+공감) 다음 (미래에 대한 전망)을 생성하되, 두 내용을 마커(::BR2::)로 구분.',
-      '- 3부분: 행동 하나만 명확히 추천(한 문장).',
-      '- 내부 마커를 반드시 사용해: ::P1:: ... ::/P1::, ::P2:: 현재 ... ::BR2:: 미래 ... ::/P2::, ::P3:: ... ::/P3::',
+      '- 반드시 다음 내부 마커만 사용해서 생성하고(사용자에게는 보이지 않음), 그 외 표식/번호/소제목/마크다운은 사용하지 마.',
+      '  ::P1:: [맥락 2~3문장, 문장마다 \\n으로 줄바꿈] ::/P1::',
+      '  ::P2C:: [현재 브리핑+공감, 한 문장 권장, 마지막에 \\n] ::/P2C::',
+      '  ::P2F:: [미래 전망, 한 문장 권장, 마지막에 \\n] ::/P2F::',
+      '  ::P3:: [행동 하나만 추천: “이럴 땐 ○○ 해보는 거 어때요?” 한 문장] ::/P3::',
+      '- 각 단락 사이에는 빈 줄 1칸(\\n\\n)이 보이도록 서버에서 조합한다.',
       `- 전체 길이: ${length_limit}자 이내(한글 기준).`,
-      '- 한국어 해요체 고정. 불필요한 장식(인용부호, 제목, 리스트 등) 금지.',
-      '- “미래 예언/전망/단락/블록/규칙/형식” 같은 메타 표현은 내용으로 드러내지 마.',
+      '- 종교 용어 남발 금지. 구절 언급은 가능하되 해석은 생활 중심, 세속적·실용적 관점.',
+      '- 한국어 해요체 고정. 불필요한 장식(인용부호, 제목, 리스트, 괄호 안 설명 등) 금지.',
       '',
       `성경 구절: ${reference}`,
       `본문: ${verse}`,
@@ -84,6 +86,8 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model,
         input: prompt,
+        // temperature: 0.7,
+        // max_output_tokens: 800,
       }),
     });
 
@@ -116,116 +120,102 @@ export default async function handler(req, res) {
       raw = JSON.stringify(data);
     }
 
-    // ===== 유틸: 해시 기반 심볼 선택(호출/입력에 따라 다양화) =====
-    const pickSymbols = (seed) => {
-      const pool = ['✦','✧','❖','✷','✺','❇','☽','☼','✩','✪'];
-      let h = 0;
-      for (let i = 0; i < seed.length; i++) h = (h * 131 + seed.charCodeAt(i)) >>> 0;
-      const i1 = h % pool.length;
-      const i2 = (h >> 5) % pool.length;
-      const a = pool[i1];
-      const b = pool[i2 === i1 ? (i2 + 3) % pool.length : i2];
-      return [a, b];
-    };
-
-    // ===== 1차 정리: 표식/번호/메타 용어/브라켓 제거 =====
+    // ===== 후처리(1): 표시 금지 요소 제거 =====
     const basicSanitize = (text) => {
       let s = text;
 
       // 줄머리 번호/불릿 제거
       s = s.replace(/^[ \t]*(\d+[.)]\s+|[-*•]\s+)/gm, '');
-
-      // 마크다운 제목 제거
+      // 마크다운 제목 기호 제거
       s = s.replace(/^[ \t]*#{1,6}\s+/gm, '');
-
-      // [단락] 등 대괄호 표식 제거 + 각종 표시용 괄호 제거(설명 본문만 대상)
+      // [단락] 등 대괄호 표식/내용 제거 (사용자에게 괄호가 보이지 않도록)
       s = s.replace(/\[[^\]]*\]/g, '');
-      s = s.replace(/[<>{}]/g, ''); // 표시용 브라켓만 제거, 일반 괄호()는 유지
-
-      // 메타 표현 제거
-      s = s.replace(/미래\s*예언|전망|단락|블록|포맷|형식|포맷팅|출력\s*규칙/gi, '');
-
-      // 과한 공백 정리
-      s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+      // 섹션 레이블성 문구 제거
+      s = s.replace(
+        /^[ \t]*(말씀의\s*맥락\s*설명|현재\s*상황\s*브리핑\s*\+\s*공감|미래\s*(예언|전망)|행동\s*하나\s*추천)\s*:?\s*/gim,
+        ''
+      );
+      // 과한 공백
+      s = s.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
 
       return s.trim();
     };
 
     raw = basicSanitize(raw);
 
-    // ===== 마커 파싱 → P1/P2/P3 분리 =====
-    const extract = (tag, text) => {
+    // ===== 후처리(2): 마커 파싱 =====
+    const extract = (tag, t) => {
       const re = new RegExp(`::${tag}::([\\s\\S]*?)::\\/${tag}::`, 'i');
-      const m = text.match(re);
+      const m = t.match(re);
       return m ? m[1].trim() : null;
     };
 
-    let p1 = extract('P1', raw);
-    let p2 = extract('P2', raw);
-    let p3 = extract('P3', raw);
+    const p1 = extract('P1', raw);
+    const p2c = extract('P2C', raw); // 현재
+    const p2f = extract('P2F', raw); // 미래
+    const p3 = extract('P3', raw);
 
-    // ===== P2 현재/미래 분리(::BR2::), 문장/개행 규칙 적용 =====
-    let p2Cur = '';
-    let p2Fut = '';
-    if (p2) {
-      const parts = p2.split(/::BR2::/i).map((t) => t.trim()).filter(Boolean);
-      if (parts.length >= 2) {
-        p2Cur = parts[0].replace(/\n+/g, ' ').trim();
-        p2Fut = parts.slice(1).join(' ').replace(/\n+/g, ' ').trim();
-      } else {
-        // BR2가 없으면 반반으로 나눌 수 없으니 한 줄로만 사용
-        p2Cur = p2.replace(/\n+/g, ' ').trim();
-      }
+    // ===== 후처리(3): 문장 줄바꿈/정리 =====
+    const cleanInnerNoBreaks = (t) =>
+      (t || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+    // P1, P3 내부: 문장 끝에 줄바꿈이 들어올 수 있으므로 2개 이상 연속 개행을 1개로 축소, 끝 공백 제거
+    const p1Clean = cleanInnerNoBreaks(p1);
+    const p3Clean = cleanInnerNoBreaks(p3);
+
+    // 2단락 현재/미래는 한 줄씩만 남기고 내부 개행 제거(문장 끝 개행은 서버에서 조합할 때 관리)
+    const oneLine = (t) =>
+      (t || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\n+/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+    const p2cLine = oneLine(p2c);
+    const p2fLine = oneLine(p2f);
+
+    // ===== 기호 선정: 신비로운 느낌의 기호들 중 무작위 선택 =====
+    const mystic = ['✦', '✧', '❖', '◆', '◇', '✼', '✺', '✹', '✷', '✵', '✸', '✴︎', '✪', '✫', '✬', '✯', '✰', '✨'];
+    const pick = () => mystic[Math.floor(Math.random() * mystic.length)];
+    const sym1 = pick();
+    const sym2 = pick();
+
+    // ===== 최종 조합 =====
+    // - P1 (여러 문장 -> 각 문장 끝 \n 유지, 단락 끝에는 \n\n)
+    // - P2 (두 줄: "기호 현재\n기호 미래")
+    // - P3 (문장 끝, 마지막에는 줄바꿈 없음)
+    const parts = [];
+
+    if (p1Clean) {
+      // 문장 끝 줄바꿈이 없다면 문장 구분이 안 보일 수 있어서 구두점 기반 보정(과격하지 않게)
+      let p1Final = p1Clean
+        // 마커 누락 대비: 마침표 뒤 공백+한글 시작이면 줄바꿈(…/?! 포함)
+        .replace(/([.?!…])\s+(?=[가-힣A-Za-z0-9“"'])/g, '$1\n')
+        .replace(/\n{2,}/g, '\n')
+        .trim();
+      parts.push(p1Final);
     }
 
-    // ===== 1/3단락: 문장 끝마다 줄바꿈(빈 줄 없음) =====
-    const sentenceBreak = (t) => {
-      if (!t) return '';
-      let s = t.replace(/\r\n/g, '\n').replace(/\n+/g, ' ').trim();
-      // 문장 구분자 뒤에 줄바꿈: ., !, ?, 。, ！, ？
-      s = s.replace(/([\.!?。！？])\s+/g, '$1\n');
-      // 마지막 문장 뒤 공백 정리
-      s = s.replace(/\n{2,}/g, '\n').trim();
-      return s;
-    };
-
-    let p1Final = sentenceBreak(p1);
-    let p3Final = sentenceBreak(p3);
-
-    // ===== 2단락: 두 줄 고정 + 각 줄 맨앞에만 신비로운 기호 =====
-    const [symA, symB] = pickSymbols(`${reference}||${verse}||${prompt_version}`);
-    const p2Lines = [];
-    if (p2Cur) p2Lines.push(`${symA} ${p2Cur}`);
-    if (p2Fut) p2Lines.push(`${symB} ${p2Fut}`);
-    let p2Final = p2Lines.join('\n'); // 딱 두 줄, 내부 추가 줄바꿈 없음
-
-    // ===== 폴백: 마커가 없을 때(드물게) 3부분 강제 구성 =====
-    if (!p1 && !p2 && !p3) {
-      let s = raw.replace(/\r\n/g, '\n').trim();
-      s = s.replace(/\n{3,}/g, '\n\n');
-      const chunks = s.split(/\n{2,}/).map((t) => t.trim()).filter(Boolean);
-      p1Final = sentenceBreak(chunks[0] || '');
-      // p2는 첫 문장/나머지로 분리해 2줄 구성
-      const mid = (chunks[1] || '').replace(/\n+/g, ' ').trim();
-      const m = mid.match(/^(.+?[\.!?。！？])(.*)$/);
-      const cur = m ? m[1].trim() : mid;
-      const fut = m && m[2] ? m[2].trim() : '';
-      p2Final = [cur ? `${symA} ${cur}` : '', fut ? `${symB} ${fut}` : ''].filter(Boolean).join('\n');
-      p3Final = sentenceBreak(chunks.slice(2).join(' ') || '');
+    // 2단락(현재/미래) — 두 줄 모두 맨 앞에만 기호, 다른 곳엔 기호 삽입 금지
+    if (p2cLine || p2fLine) {
+      const line1 = p2cLine ? `${sym1} ${p2cLine}` : '';
+      const line2 = p2fLine ? `${sym2} ${p2fLine}` : '';
+      const p2Block = [line1, line2].filter(Boolean).join('\n');
+      parts.push(p2Block);
     }
 
-    // ===== 단락 결합: P1 + 빈 줄 + P2(2줄) + 빈 줄 + P3
-    let explanation = [p1Final, p2Final, p3Final].filter(Boolean).join('\n\n');
+    if (p3Clean) {
+      // P3도 문장 끝 줄바꿈 보정(필요 시 한 번)
+      const p3Final = p3Clean.replace(/\n{2,}/g, '\n').trim();
+      parts.push(p3Final);
+    }
 
-    // ===== 마무리 살균: 남은 마커/브라켓/메타 단어 제거, 기호 오염 방지 =====
-    explanation = explanation
-      .replace(/::\/?P[123]::|::BR2::/g, '')
-      .replace(/\[[^\]]*\]/g, '')
-      .replace(/[<>{}]/g, '')
-      .replace(/미래\s*예언|전망|단락|블록|포맷|형식|출력\s*규칙/gi, '')
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    // 단락 사이 빈 줄 1칸
+    let explanation = parts.filter(Boolean).join('\n\n').trim();
 
     // ===== 길이 제한(서버 보증) =====
     const limit = Number(length_limit) || 1000;
@@ -233,7 +223,7 @@ export default async function handler(req, res) {
       explanation = explanation.slice(0, limit).trim();
     }
 
-    // 좌측 정렬은 텍스트만 내려주면 클라 기본(TextAlign.start)으로 충족
+    // 좌측 정렬은 클라이언트 Text 기본값(Left)으로 표시됨.
     return res.status(200).json({ explanation });
   } catch (e) {
     return res.status(500).json({ error: e?.message || 'unknown error' });
