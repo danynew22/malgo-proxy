@@ -42,9 +42,11 @@ export default async function handler(req, res) {
     }
 
     // ===== 프롬프트 구성 =====
-    // ⛳️ 마커 기반 단락 강제: <<<P1>>>, <<<P2>>>, <<<P3>>>
-    //   - 모델은 반드시 세 단락을 위 마커로 감싸서 출력
-    //   - 서버는 마커를 제거하고 단락 사이에 \n\n을 넣어 반환
+    // 비종교인 대상 톤 강화 + 3단락 + 단락 사이 빈 줄 + 2단락 내부 줄바꿈(현재/미래 사이)
+    // ⛳️ 내부 마커를 반드시 사용하게 하여 서버에서 치환/제거함:
+    // ::P1:: ... ::/P1::
+    // ::P2:: (현재 브리핑+공감) ::BR2:: (미래 예언) ::/P2::
+    // ::P3:: ... ::/P3::
     const sysRole =
       '너는 주어진 성경 구절을 바탕으로, 비종교 독자도 편안히 읽을 수 있게 현실적이고 일상적인 언어로 풀어주는 해석자야. ' +
       '설교체/교리 설명/전도성 권유는 피하고, 신학적 단정 대신 생활 맥락과 감정에 공감하는 설명을 해. ' +
@@ -56,14 +58,16 @@ export default async function handler(req, res) {
       instructions ? `추가 지시: ${instructions}` : '',
       '',
       '출력 규칙(엄격):',
-      '- 출력은 총 3개의 단락(문단)으로만 구성하고, 번호/소제목/[단락]/마크다운은 절대 쓰지 마.',
-      '- 각 단락은 반드시 다음 마커로 감싸서 출력해:',
-      '  <<<P1>>> ... <<</P1>>>, <<<P2>>> ... <<</P2>>>, <<<P3>>> ... <<</P3>>>',
-      '- 1단락(P1): 말씀의 맥락을 2~3문장으로 간단히 설명해요. 종교 용어 남발 금지.',
-      '- 2단락(P2): 같은 단락 안에서 "현재 상황 브리핑+공감"을 말한 뒤, 곧바로 "미래 예언(전망)"을 이어서 써요. 필요하면 ✔/⭐/🔹 중 하나로 시작해도 돼요.',
-      '- 3단락(P3): 행동 하나만 딱 추천해요. “이럴 땐 ○○ 해보는 거 어때요?”처럼 한 문장으로 마무리해요.',
+      '- 출력은 총 3개의 단락(문단)으로 구성하고, 번호/소제목/[단락]/마크다운은 절대 쓰지 마.',
+      '- 각 단락 사이에는 빈 줄 1칸(\\n\\n)을 넣어 분리해요. (서버에서 보정함)',
+      '- 단락 내부에서는 줄바꿈을 넣지 말되, **2단락에 한해서 현재→미래 사이에만 한 번 줄바꿈**을 넣어요.',
+      '- 이 줄바꿈은 반드시 내부 마커(::BR2::)로 표기해요. 서버가 실제 개행으로 바꿔요.',
+      '- 반드시 다음 내부 마커를 사용해서 생성해요(사용자에게는 보이지 않음):',
+      '  ::P1:: [말씀 맥락 2~3문장, 간결/현실적] ::/P1::',
+      '  ::P2:: [현재 브리핑+공감, 필요시 ✔/⭐/🔹로 시작] ::BR2:: [미래 예언(전망)] ::/P2::',
+      '  ::P3:: [행동 하나만 추천: “이럴 땐 ○○ 해보는 거 어때요?” 한 문장] ::/P3::',
       `- 전체 길이: ${length_limit}자 이내(한글 기준).`,
-      '- 종교 권유/교리 전개/축복 선언/믿음 강요/기도 강요 표현 금지. 해석은 생활 중심, 세속적·실용적 관점.',
+      '- 종교 권유/교리 전개/축복 선언/믿음 강요/기도 강요 표현 금지. 구절 인용은 가능하되 해석은 생활 중심, 세속적·실용적 관점.',
       '- 한국어 해요체 고정. 불필요한 장식(인용부호, 제목, 리스트 등) 금지.',
       '',
       `성경 구절: ${reference}`,
@@ -113,78 +117,135 @@ export default async function handler(req, res) {
         .join('')
         .trim();
     } else if (typeof data === 'string') {
-      raw = data.trim();
+      raw = data;
     } else {
       raw = JSON.stringify(data);
     }
 
-    // ===== 후처리 1: 번호/소제목/[단락] 제거 =====
-    const stripDecorations = (text) => {
+    // ===== 후처리(1): 번호/소제목/[단락] 제거 등 1차 정리 =====
+    const basicSanitize = (text) => {
       let s = text;
+
+      // 줄머리 번호/불릿 제거: "1. ", "1) ", "- ", "* ", "• "
       s = s.replace(/^[ \t]*(\d+[.)]\s+|[-*•]\s+)/gm, '');
+
+      // 마크다운 제목 기호 제거: "#", "##", ...
       s = s.replace(/^[ \t]*#{1,6}\s+/gm, '');
+
+      // [단락] 표식 제거
       s = s.replace(/\[단락[^\]]*\]\s*/g, '');
+
+      // 섹션 레이블 제거
       s = s.replace(
         /^[ \t]*(말씀의\s*맥락\s*설명|현재\s*상황\s*브리핑\s*\+\s*공감|미래\s*예언|행동\s*하나\s*추천)\s*:?\s*/gim,
         ''
       );
+
+      // 과한 공백
+      s = s.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+
       return s.trim();
     };
 
-    raw = stripDecorations(raw);
+    raw = basicSanitize(raw);
 
-    // ===== 후처리 2: 마커 기반 3단락 추출 → \n\n로 합치기 =====
-    const extractByMarkers = (text) => {
-      // 허용할 마커 패턴
-      const grab = (name) => {
-        const re = new RegExp(`<<<${name}>>>([\\s\\S]*?)<<\\/${name}>>>`, 'i');
+    // ===== 후처리(2): 내부 마커 기반 파싱 → 최종 문자열 구성 =====
+    const parseByMarkers = (text) => {
+      const get = (tag) => {
+        const re = new RegExp(`::${tag}::([\\s\\S]*?)::\\/${tag}::`, 'i');
         const m = text.match(re);
-        return (m && m[1] ? m[1] : '').trim();
+        return m ? m[1].trim() : null;
+        // [\s\S] to match across lines
       };
-      let p1 = grab('P1');
-      let p2 = grab('P2');
-      let p3 = grab('P3');
 
-      // 혹시 마커가 누락되면 폴백: 내용 전체를 단락 추정
-      if (!p1 && !p2 && !p3) {
-        return null; // 폴백 경로로 처리
+      const p1 = get('P1');
+      const p2 = get('P2');
+      const p3 = get('P3');
+
+      if (!p1 && !p2 && !p3) return null; // markers not present
+
+      // 2단락 내부: ::BR2:: 로 분리 (현재/미래)
+      let p2Final = '';
+      if (p2) {
+        const parts = p2.split(/::BR2::/i).map((t) => t.trim());
+        if (parts.length >= 2) {
+          // 단락 내부에는 정확히 한 번의 줄바꿈 적용
+          p2Final = `${parts[0]}\n${parts.slice(1).join(' ')}`.replace(/\n{2,}/g, '\n');
+        } else {
+          // BR2가 없으면 그냥 한 문단
+          p2Final = p2.replace(/\n{2,}/g, '\n').replace(/\n/g, ' ');
+        }
       }
 
-      // 단락 내부 개행은 공백으로 평탄화(문단 유지)
-      const flatten = (s) =>
-        s.replace(/\r\n/g, '\n').replace(/\n{2,}/g, ' ').replace(/\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
+      // 각 단락 내부의 불필요 개행/공백 정리 (단, p2는 위에서 한 줄 개행 유지)
+      const cleanInner = (t) =>
+        (t || '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\n{2,}/g, '\n')
+          .replace(/\n/g, ' ')
+          .trim();
 
-      p1 = flatten(p1);
-      p2 = flatten(p2);
-      p3 = flatten(p3);
+      const p1Final = cleanInner(p1);
+      const p3Final = cleanInner(p3);
 
-      // 비어있는 단락은 제외하되, 최소 2개의 \n\n은 보장
-      const parts = [p1, p2, p3].filter((x) => x && x.length > 0);
-      return parts.join('\n\n').trim();
+      // 최종 합치기: 단락 사이 빈 줄(\n\n)
+      const paras = [p1Final, p2Final, p3Final].filter((x) => x && x.length > 0);
+      return paras.join('\n\n').trim();
     };
 
-    let explanation = extractByMarkers(raw);
+    // 1차: 마커 파싱 시도
+    let explanation = parseByMarkers(raw);
 
-    // ===== 후처리 3: 마커가 없을 때의 폴백(normalize) =====
+    // 2차: 마커가 없으면 기존 규칙으로 단락 보정 + 2단락 내부 줄바꿈 휴리스틱
     if (!explanation) {
       const normalizeParagraphs = (text) => {
         let s = text.replace(/\r\n/g, '\n').trim();
-        // 과도한 개행 정리
+        // 3개 이상 개행 -> 2개
         s = s.replace(/\n{3,}/g, '\n\n');
+
         // 단락 구분 임시 토큰
         const MARK = '__<PBRK>__';
         s = s.replace(/\n{2,}/g, MARK);
-        // 단락 내부 개행은 공백으로
+        // 단락 내부 개행 제거
         s = s.replace(/\n/g, ' ');
-        // 임시 토큰 복구
+        // 복구
         s = s.replace(new RegExp(MARK, 'g'), '\n\n').trim();
-        // 3단락 초과 시 3번째에 합치기
-        const parts = s.split(/\n{2,}/);
+
+        // 3단락 강제
+        const parts = s.split(/\n{2,}/).map((t) => t.trim()).filter(Boolean);
         if (parts.length > 3) {
           s = [parts[0], parts[1], parts.slice(2).join(' ')].join('\n\n');
+        } else if (parts.length < 3) {
+          // 부족하면 최대한 3개에 맞춰 합성 (필요 시 빈 단락 제거)
+          while (parts.length < 3) parts.push('');
+          s = [parts[0], parts[1], parts[2]].join('\n\n').trim();
+        } else {
+          s = parts.join('\n\n');
+        }
+
+        // 2단락 내부 한 번 줄바꿈 휴리스틱: "앞으로", "미래" 같은 신호 앞에서 개행
+        s = s.replace(/\n{3,}/g, '\n\n');
+        const ps = s.split(/\n{2,}/);
+        if (ps.length >= 2) {
+          let p2 = ps[1];
+          // 이미 개행이 없다면 신호어 앞에서 개행
+          if (!/\n/.test(p2)) {
+            p2 = p2.replace(
+              /(앞으로[는도]?\s*)/,
+              (m) => `\n${m}`
+            );
+            // 만약 신호어가 없었으면 그대로 두고, 혹시 개행이 2번 이상 생기면 1번으로 축소
+            p2 = p2.replace(/\n{2,}/g, '\n');
+          } else {
+            // 개행이 2번 이상이면 1번으로 축소
+            p2 = p2.replace(/\n{2,}/g, '\n');
+          }
+          ps[1] = p2;
+          s = ps.join('\n\n').trim();
         }
         return s;
       };
+
       explanation = normalizeParagraphs(raw);
     }
 
