@@ -15,12 +15,12 @@ function json(data, status = 200) {
 }
 
 export default async function handler(req) {
-  // 1) 프리플라이트(사전요청)
+  // 프리플라이트
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS });
   }
 
-  // 2) 브라우저에서 바로 점검 가능하게 GET 허용(헬스체크)
+  // 헬스체크(브라우저에서 바로 열어보기용)
   if (req.method === 'GET') {
     return json({ ok: true, route: '/api/explain', runtime: 'edge' });
   }
@@ -30,9 +30,7 @@ export default async function handler(req) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const { model, reference, verse } = body;
-
+    const { model, reference, verse } = await req.json();
     const prompt =
       `${reference}\n${verse}\n\n` +
       `위 말씀을 바탕으로 '현재 상황'과 '앞으로의 행동'을 현실적이고 확신의 어조로 간결히 조언해줘.`;
