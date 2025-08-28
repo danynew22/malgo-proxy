@@ -1,22 +1,32 @@
-// api/explain.js  (Serverless, Node 22)
-export default async function handler(req, res) {
-  // 안전빵: 함수 레벨에서도 CORS 헤더 부착
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+// api/explain.js
+export const config = { runtime: 'edge' };
 
-  if (req.method === 'OPTIONS') return res.status(204).end();
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
 
-  if (req.method === 'GET') {
-    return res.status(200).json({ ok: true, route: '/api/explain', runtime: 'node22' });
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...CORS, 'Content-Type': 'application/json' },
+  });
+}
+
+export default async function handler(req) {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS });
   }
-
+  if (req.method === 'GET') {
+    return json({ ok: true, route: '/api/explain', runtime: 'edge' });
+  }
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return json({ error: 'Method not allowed' }, 405);
   }
 
   try {
-    const { model, reference, verse } = req.body || {};
+    const { model, reference, verse } = await req.json();
     const prompt =
       `${reference}\n${verse}\n\n` +
       `위 말씀을 바탕으로 '현재 상황'과 '앞으로의 행동'을 현실적이고 확신의 어조로 간결히 조언해줘.`;
@@ -40,13 +50,12 @@ export default async function handler(req, res) {
 
     if (!resp.ok) {
       const txt = await resp.text();
-      return res.status(500).json({ error: `OpenAI error: ${txt}` });
+      return json({ error: `OpenAI error: ${txt}` }, 500);
     }
-
     const data = await resp.json();
     const text = (data?.choices?.[0]?.message?.content || '').trim();
-    return res.status(200).json({ explanation: text });
+    return json({ explanation: text });
   } catch (e) {
-    return res.status(500).json({ error: e?.message || 'unknown error' });
+    return json({ error: e?.message || 'unknown error' }, 500);
   }
 }
