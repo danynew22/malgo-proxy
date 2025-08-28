@@ -42,8 +42,7 @@ export default async function handler(req, res) {
     }
 
     // ===== 프롬프트 구성 =====
-    // 비종교인 대상 톤 강화 + 3단락 + 단락 사이 빈 줄 + 2단락 내부 줄바꿈(현재/미래 사이)
-    // ⛳️ 내부 마커를 반드시 사용하게 하여 서버에서 치환/제거함:
+    // 내부 마커 사용 지시:
     // ::P1:: ... ::/P1::
     // ::P2:: (현재 브리핑+공감) ::BR2:: (미래 예언) ::/P2::
     // ::P3:: ... ::/P3::
@@ -59,13 +58,13 @@ export default async function handler(req, res) {
       '',
       '출력 규칙(엄격):',
       '- 출력은 총 3개의 단락(문단)으로 구성하고, 번호/소제목/[단락]/마크다운은 절대 쓰지 마.',
-      '- 각 단락 사이에는 빈 줄 1칸(\\n\\n)을 넣어 분리해요. (서버에서 보정함)',
-      '- 단락 내부에서는 줄바꿈을 넣지 말되, **2단락에 한해서 현재→미래 사이에만 한 번 줄바꿈**을 넣어요.',
-      '- 이 줄바꿈은 반드시 내부 마커(::BR2::)로 표기해요. 서버가 실제 개행으로 바꿔요.',
-      '- 반드시 다음 내부 마커를 사용해서 생성해요(사용자에게는 보이지 않음):',
+      '- 각 단락 사이는 빈 줄 1칸(\\n\\n).',
+      '- 단락 내부 줄바꿈은 금지하지만, **2단락에 한해서 현재→미래 사이에만 한 번 줄바꿈**을 넣어.',
+      '- 반드시 내부 마커를 사용해 생성해(사용자에게는 보이지 않음):',
       '  ::P1:: [말씀 맥락 2~3문장, 간결/현실적] ::/P1::',
-      '  ::P2:: [현재 브리핑+공감, 필요시 ✔/⭐/🔹로 시작] ::BR2:: [미래 예언(전망)] ::/P2::',
+      '  ::P2:: [현재 브리핑+공감] ::BR2:: [미래 예언(전망)] ::/P2::',
       '  ::P3:: [행동 하나만 추천: “이럴 땐 ○○ 해보는 거 어때요?” 한 문장] ::/P3::',
+      '- 2단락의 현재/미래 **각 문장 앞에는 기호(이모지/불릿 등)를 붙여도 돼**. (서버에서도 추가 장식함)',
       `- 전체 길이: ${length_limit}자 이내(한글 기준).`,
       '- 종교 권유/교리 전개/축복 선언/믿음 강요/기도 강요 표현 금지. 구절 인용은 가능하되 해석은 생활 중심, 세속적·실용적 관점.',
       '- 한국어 해요체 고정. 불필요한 장식(인용부호, 제목, 리스트 등) 금지.',
@@ -122,40 +121,41 @@ export default async function handler(req, res) {
       raw = JSON.stringify(data);
     }
 
-    // ===== 후처리(1): 번호/소제목/[단락] 제거 등 1차 정리 =====
+    // ===== 후처리(1): 번호/소제목/[단락] 제거 =====
     const basicSanitize = (text) => {
       let s = text;
-
-      // 줄머리 번호/불릿 제거: "1. ", "1) ", "- ", "* ", "• "
-      s = s.replace(/^[ \t]*(\d+[.)]\s+|[-*•]\s+)/gm, '');
-
-      // 마크다운 제목 기호 제거: "#", "##", ...
-      s = s.replace(/^[ \t]*#{1,6}\s+/gm, '');
-
-      // [단락] 표식 제거
-      s = s.replace(/\[단락[^\]]*\]\s*/g, '');
-
-      // 섹션 레이블 제거
+      s = s.replace(/^[ \t]*(\d+[.)]\s+|[-*•]\s+)/gm, '');  // 줄머리 불릿
+      s = s.replace(/^[ \t]*#{1,6}\s+/gm, '');              // 마크다운 헤더
+      s = s.replace(/\[단락[^\]]*\]\s*/g, '');              // [단락] 표식
       s = s.replace(
         /^[ \t]*(말씀의\s*맥락\s*설명|현재\s*상황\s*브리핑\s*\+\s*공감|미래\s*예언|행동\s*하나\s*추천)\s*:?\s*/gim,
         ''
       );
-
-      // 과한 공백
       s = s.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
-
       return s.trim();
     };
 
     raw = basicSanitize(raw);
 
-    // ===== 후처리(2): 내부 마커 기반 파싱 → 최종 문자열 구성 =====
+    // ===== 유틸: 기호 처리 =====
+    const SYMBOLS = ['✔', '⭐', '🔹', '•', '▪', '▸', '➤', '→', '➡', '✦', '❖', '◦', '➔', '➜'];
+    const pickTwoSymbols = () => {
+      const a = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+      let b = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+      if (b === a) b = SYMBOLS[(SYMBOLS.indexOf(b) + 1) % SYMBOLS.length];
+      return [a, b];
+    };
+    const stripLeadingSymbol = (line) =>
+      String(line)
+        .replace(/^[ \t]*(?:[✔⭐🔹•▪▸➤→➡✦❖◦➔➜\-–—]\s*)/, '')
+        .trim();
+
+    // ===== 후처리(2): 마커 파싱 → 단락 조립(+ 2단락 라인별 기호 랜덤 장식) =====
     const parseByMarkers = (text) => {
       const get = (tag) => {
         const re = new RegExp(`::${tag}::([\\s\\S]*?)::\\/${tag}::`, 'i');
         const m = text.match(re);
         return m ? m[1].trim() : null;
-        // [\s\S] to match across lines
       };
 
       const p1 = get('P1');
@@ -164,20 +164,22 @@ export default async function handler(req, res) {
 
       if (!p1 && !p2 && !p3) return null; // markers not present
 
-      // 2단락 내부: ::BR2:: 로 분리 (현재/미래)
+      // 2단락 내부: 현재/미래
       let p2Final = '';
       if (p2) {
-        const parts = p2.split(/::BR2::/i).map((t) => t.trim());
-        if (parts.length >= 2) {
-          // 단락 내부에는 정확히 한 번의 줄바꿈 적용
-          p2Final = `${parts[0]}\n${parts.slice(1).join(' ')}`.replace(/\n{2,}/g, '\n');
+        const chunks = p2.split(/::BR2::/i).map((t) => t.trim());
+        const [sym1, sym2] = pickTwoSymbols();
+        if (chunks.length >= 2) {
+          const current = stripLeadingSymbol(chunks[0]);
+          const future = stripLeadingSymbol(chunks.slice(1).join(' '));
+          p2Final = `${sym1} ${current}\n${sym2} ${future}`.replace(/\n{2,}/g, '\n');
         } else {
-          // BR2가 없으면 그냥 한 문단
-          p2Final = p2.replace(/\n{2,}/g, '\n').replace(/\n/g, ' ');
+          // BR2 누락 시, 줄바꿈 없이 한 문단 처리(기호는 한 번만)
+          const currentOnly = stripLeadingSymbol(p2.replace(/\n+/g, ' '));
+          p2Final = `${sym1} ${currentOnly}`;
         }
       }
 
-      // 각 단락 내부의 불필요 개행/공백 정리 (단, p2는 위에서 한 줄 개행 유지)
       const cleanInner = (t) =>
         (t || '')
           .replace(/\r\n/g, '\n')
@@ -188,65 +190,54 @@ export default async function handler(req, res) {
       const p1Final = cleanInner(p1);
       const p3Final = cleanInner(p3);
 
-      // 최종 합치기: 단락 사이 빈 줄(\n\n)
-      const paras = [p1Final, p2Final, p3Final].filter((x) => x && x.length > 0);
+      const paras = [p1Final, p2Final, p3Final].filter(Boolean);
       return paras.join('\n\n').trim();
     };
 
-    // 1차: 마커 파싱 시도
+    // 1차: 마커 파싱
     let explanation = parseByMarkers(raw);
 
-    // 2차: 마커가 없으면 기존 규칙으로 단락 보정 + 2단락 내부 줄바꿈 휴리스틱
+    // 2차: 마커 없을 때의 보정(휴리스틱) + 2단락 현재/미래에 기호 보장
     if (!explanation) {
-      const normalizeParagraphs = (text) => {
-        let s = text.replace(/\r\n/g, '\n').trim();
-        // 3개 이상 개행 -> 2개
-        s = s.replace(/\n{3,}/g, '\n\n');
+      let s = raw.replace(/\r\n/g, '\n').trim();
+      s = s.replace(/\n{3,}/g, '\n\n');
 
-        // 단락 구분 임시 토큰
-        const MARK = '__<PBRK>__';
-        s = s.replace(/\n{2,}/g, MARK);
-        // 단락 내부 개행 제거
-        s = s.replace(/\n/g, ' ');
-        // 복구
-        s = s.replace(new RegExp(MARK, 'g'), '\n\n').trim();
+      // 단락 분리 통일
+      const MARK = '__<PBRK>__';
+      s = s.replace(/\n{2,}/g, MARK).replace(/\n/g, ' ').replace(new RegExp(MARK, 'g'), '\n\n').trim();
 
-        // 3단락 강제
-        const parts = s.split(/\n{2,}/).map((t) => t.trim()).filter(Boolean);
-        if (parts.length > 3) {
-          s = [parts[0], parts[1], parts.slice(2).join(' ')].join('\n\n');
-        } else if (parts.length < 3) {
-          // 부족하면 최대한 3개에 맞춰 합성 (필요 시 빈 단락 제거)
-          while (parts.length < 3) parts.push('');
-          s = [parts[0], parts[1], parts[2]].join('\n\n').trim();
-        } else {
-          s = parts.join('\n\n');
+      // 3단락으로 맞추기
+      let parts = s.split(/\n{2,}/).map((t) => t.trim()).filter(Boolean);
+      if (parts.length > 3) parts = [parts[0], parts[1], parts.slice(2).join(' ')];
+      if (parts.length < 3) while (parts.length < 3) parts.push('');
+
+      // 2단락 내부 현재/미래 분리 시도
+      let second = parts[1] || '';
+      if (!/\n/.test(second)) {
+        // 신호어 앞에서 줄바꿈 시도
+        const before = second;
+        second = second.replace(/(앞으로[는도]?\s*)/, (m) => `\n${m}`);
+        if (second === before) {
+          // 그래도 못 나누면, 문장 경계 기준 첫 마침표 뒤에서 한번 개행
+          second = second.replace(/([.!?。…])\s+/, '$1\n');
         }
+        second = second.replace(/\n{2,}/g, '\n');
+      } else {
+        second = second.replace(/\n{2,}/g, '\n');
+      }
 
-        // 2단락 내부 한 번 줄바꿈 휴리스틱: "앞으로", "미래" 같은 신호 앞에서 개행
-        s = s.replace(/\n{3,}/g, '\n\n');
-        const ps = s.split(/\n{2,}/);
-        if (ps.length >= 2) {
-          let p2 = ps[1];
-          // 이미 개행이 없다면 신호어 앞에서 개행
-          if (!/\n/.test(p2)) {
-            p2 = p2.replace(
-              /(앞으로[는도]?\s*)/,
-              (m) => `\n${m}`
-            );
-            // 만약 신호어가 없었으면 그대로 두고, 혹시 개행이 2번 이상 생기면 1번으로 축소
-            p2 = p2.replace(/\n{2,}/g, '\n');
-          } else {
-            // 개행이 2번 이상이면 1번으로 축소
-            p2 = p2.replace(/\n{2,}/g, '\n');
-          }
-          ps[1] = p2;
-          s = ps.join('\n\n').trim();
-        }
-        return s;
-      };
+      // 현재/미래 라인별 기호 장식
+      const [sym1, sym2] = pickTwoSymbols();
+      const lines = second.split('\n');
+      if (lines.length >= 2) {
+        const current = stripLeadingSymbol(lines[0]);
+        const future = stripLeadingSymbol(lines.slice(1).join(' '));
+        parts[1] = `${sym1} ${current}\n${sym2} ${future}`;
+      } else {
+        parts[1] = `${sym1} ${stripLeadingSymbol(second)}`;
+      }
 
-      explanation = normalizeParagraphs(raw);
+      explanation = parts.join('\n\n').trim();
     }
 
     // ===== 길이 제한(서버 보증) =====
