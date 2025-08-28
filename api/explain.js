@@ -1,28 +1,25 @@
-// api/explain.js
-function setCORS(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');            // ← 핵심
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-}
+// api/explain.js  → Edge Runtime (vercel.json 필요 없음)
+export const config = { runtime: 'edge' };
 
-export default async function handler(req, res) {
-  setCORS(res);
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
 
-  // 프리플라이트(사전검사) 응답
+export default async function handler(req) {
   if (req.method === 'OPTIONS') {
-    return res.status(204).end();
+    return new Response(null, { status: 204, headers: CORS });
   }
-
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+    });
   }
 
   try {
-    // 바디 파싱(스트림 → JSON)
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
-    const { model, reference, verse } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-
+    const { model, reference, verse } = await req.json();
     const prompt =
       `${reference}\n${verse}\n\n` +
       `위 말씀을 바탕으로 '현재 상황'과 '앞으로의 행동'을 현실적이고 확신의 어조로 간결히 조언해줘.`;
@@ -30,33 +27,39 @@ export default async function handler(req, res) {
     const oai = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: model || 'gpt-5-nano',
         messages: [
           { role: 'system', content: '너는 현실 중심 멘토. 단호하고 명확하게 조언.' },
-          { role: 'user', content: prompt }
+          { role: 'user', content: prompt },
         ],
         temperature: 0.7,
-        max_tokens: 600
-      })
+        max_tokens: 600,
+      }),
     });
 
     if (!oai.ok) {
       const txt = await oai.text();
-      setCORS(res);
-      return res.status(500).json({ error: `OpenAI error: ${txt}` });
+      return new Response(JSON.stringify({ error: `OpenAI error: ${txt}` }), {
+        status: 500,
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
     }
 
     const data = await oai.json();
     const text = (data?.choices?.[0]?.message?.content || '').trim();
 
-    setCORS(res);
-    return res.status(200).json({ explanation: text });
+    return new Response(JSON.stringify({ explanation: text }), {
+      status: 200,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+    });
   } catch (e) {
-    setCORS(res); // 에러에도 반드시!
-    return res.status(500).json({ error: e?.message || 'unknown error' });
+    return new Response(JSON.stringify({ error: e?.message || 'unknown error' }), {
+      status: 500,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+    });
   }
 }
